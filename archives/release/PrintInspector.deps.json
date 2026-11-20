@@ -1,0 +1,23 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "PrintInspector/1.0.0": {
+        "runtime": {
+          "PrintInspector.dll": {}
+        }
+      }
+    }
+  },
+  "libraries": {
+    "PrintInspector/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

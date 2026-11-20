@@ -1,0 +1,93 @@
+<Window x:Class="PrintInspector.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="烫印图案 · 多光谱分割" Icon="Assets/PrintInspector.ico"
+        Width="1280" Height="820" MinWidth="900" MinHeight="580"
+        FontFamily="Microsoft YaHei UI" FontSize="16" Foreground="#183840" Background="#EEF3F3"
+        UseLayoutRounding="True">
+    <DockPanel Background="#EEF3F3">
+        <Border DockPanel.Dock="Top" Background="#14363F" Padding="16,10">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" x:Name="Browse" Content="打开目录" Click="BrowseClick"
+                        Margin="14,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock DockPanel.Dock="Left" Text="烫印图案分割" FontSize="24" FontWeight="SemiBold"
+                           Foreground="White" Margin="0,0,24,0" VerticalAlignment="Center"/>
+                <TextBlock x:Name="Dataset" Text="请选择样品目录" Foreground="#D4E7E6"
+                           VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+            </DockPanel>
+        </Border>
+        <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="#CADADA" BorderThickness="0,1,0,0"
+                Padding="16,7">
+            <DockPanel>
+                <Button DockPanel.Dock="Right" x:Name="Export" Click="ExportClick" Content="导出当前结果"
+                        Margin="12,0,0,0" IsEnabled="False"/>
+                <TextBlock DockPanel.Dock="Right" Text="滚轮缩放 · 左键拖动 · 双击复位" Foreground="#486265"
+                           FontSize="15" Margin="12,0,0,0" VerticalAlignment="Center"/>
+                <TextBlock x:Name="Status" Text="就绪" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"
+                           ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+            </DockPanel>
+        </Border>
+        <Grid>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="222"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border Margin="12" Background="White" BorderBrush="#CADADA" BorderThickness="1" CornerRadius="6"
+                    Padding="12">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Text="样品组" FontSize="19" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <StackPanel DockPanel.Dock="Bottom" Margin="0,12,0,0">
+                        <TextBlock Text="分割方法" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                        <ComboBox x:Name="Route" AutomationProperties.Name="分割方法"/>
+                        <Button x:Name="Tune" Click="TuneClick" Content="掩膜参数…" Margin="0,6,0,0"/>
+                        <Button x:Name="Single" Click="SingleClick" Content="运行当前组" Background="#006B64"
+                                BorderBrush="#006B64" Foreground="White" FontWeight="SemiBold" Margin="0,10,0,6"/>
+                        <Button x:Name="Batch" Click="BatchClick" Content="批量运行并导出" Margin="0,0,0,6"/>
+                        <Button x:Name="Stop" Click="StopClick" IsEnabled="False" Content="取消处理"/>
+                    </StackPanel>
+                    <ListBox x:Name="Groups" SelectionChanged="GroupChanged" AutomationProperties.Name="样品组"
+                             BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"/>
+                </DockPanel>
+            </Border>
+            <Border Grid.Column="1" Margin="0,12,5,12" BorderBrush="#B7CACB" BorderThickness="1"
+                    Background="#1B2C34" CornerRadius="6">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Background="#F8FBFA" CornerRadius="5,5,0,0" Padding="12,8">
+                        <DockPanel>
+                            <ComboBox DockPanel.Dock="Right" x:Name="Band" Width="90"
+                                      SelectionChanged="ViewChanged" AutomationProperties.Name="原图波段"/>
+                            <TextBlock Text="原始波段" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+                    <Canvas x:Name="OriginalPane" Background="Transparent" ClipToBounds="True"
+                            MouseWheel="PaneWheel" MouseLeftButtonDown="PaneDown" MouseLeftButtonUp="PaneUp"
+                            MouseMove="PaneMove" LostMouseCapture="PaneLostCapture" SizeChanged="PaneSizeChanged">
+                        <Image x:Name="Original" Stretch="Fill" IsHitTestVisible="False"/>
+                    </Canvas>
+                </DockPanel>
+            </Border>
+            <Border Grid.Column="2" Margin="5,12,12,12" BorderBrush="#B7CACB" BorderThickness="1"
+                    Background="#1B2C34" CornerRadius="6">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Background="#F8FBFA" CornerRadius="5,5,0,0" Padding="12,8">
+                        <DockPanel>
+                            <ComboBox DockPanel.Dock="Right" x:Name="Layer" Width="126"
+                                      SelectionChanged="ViewChanged" AutomationProperties.Name="结果图层"/>
+                            <TextBlock Text="分割结果" FontSize="19" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                        </DockPanel>
+                    </Border>
+                    <Canvas x:Name="ResultPane" Background="Transparent" ClipToBounds="True"
+                            MouseWheel="PaneWheel" MouseLeftButtonDown="PaneDown" MouseLeftButtonUp="PaneUp"
+                            MouseMove="PaneMove" LostMouseCapture="PaneLostCapture" SizeChanged="PaneSizeChanged">
+                        <Grid x:Name="ResultContent" IsHitTestVisible="False">
+                            <Image x:Name="ResultView" Stretch="Fill"/>
+                            <Image x:Name="Edges" Stretch="Fill"/>
+                        </Grid>
+                    </Canvas>
+                </DockPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

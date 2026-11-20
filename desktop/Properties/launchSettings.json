@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "PrintInspector": {
+      "commandName": "Project",
+      "nativeDebugging": true
+    }
+  }
+}

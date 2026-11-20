@@ -1,0 +1,10 @@
+build/
+dist/
+desktop/obj/
+desktop/bin/
+__pycache__/
+*.tmp
+
+.vs/
+
+/third_party/opencv/x64/vc15/bin/opencv_world454d.dll

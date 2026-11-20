@@ -1,0 +1,16 @@
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <OpenCvRoot Condition="'$(OpenCvRoot)'==''">$(MSBuildThisFileDirectory)..\third_party\opencv</OpenCvRoot>
+    <OpenCvSuffix Condition="'$(Configuration)'=='Debug'">d</OpenCvSuffix>
+    <OpenCvName>opencv_world454$(OpenCvSuffix)</OpenCvName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(OpenCvRoot)\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <AdditionalLibraryDirectories>$(OpenCvRoot)\x64\vc15\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>$(OpenCvName).lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+</Project>

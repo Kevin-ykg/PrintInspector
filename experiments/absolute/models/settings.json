@@ -1,0 +1,13 @@
+{
+  "route": 8,
+  "pca": 4,
+  "thresholds": {
+    "1": 136,
+    "8": 128,
+    "2": 160,
+    "3": 80,
+    "4": 96
+  },
+  "status": "engineering review",
+  "relative": 0
+}

@@ -1,0 +1,11 @@
+﻿group,route,region,region_px,previous_foreground_px,current_foreground_px
+12,8,stroke_proxy,17829,4765,17338
+12,8,adjacent_background_proxy,45621,0,24
+12,4,stroke_proxy,17829,17712,17712
+12,4,adjacent_background_proxy,45621,263,263
+4,8,blank_margin,1019904,213,213
+4,4,blank_margin,1019904,3281,149
+5,8,blank_margin,589824,0,0
+5,4,blank_margin,589824,67736,0
+7,8,blank_margin,1019904,107,107
+7,4,blank_margin,1019904,2278,357

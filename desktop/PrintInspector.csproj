@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets/PrintInspector.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <NativeDir>$(MSBuildProjectDirectory)\..\build\vs\$(Configuration)\native</NativeDir>
+  </PropertyGroup>
+  <ItemGroup>
+    <Resource Include="Assets/PrintInspector.ico"/>
+    <ProjectReference Include="../native/PrintVision.vcxproj" ReferenceOutputAssembly="false" SkipGetTargetFrameworkProperties="true" Private="false"/>
+    <Content Include="../models/rf*.yml" Exclude="../models/rf1.yml" Link="models/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest"/>
+    <Content Include="../models/settings.json" Link="models/settings.json" CopyToOutputDirectory="PreserveNewest"/>
+  </ItemGroup>
+  <Target Name="CopyNativeRuntime" AfterTargets="Build">
+    <ItemGroup>
+      <NativeRuntime Include="$(NativeDir)\PrintVision.dll;$(NativeDir)\opencv_world454*.dll;$(NativeDir)\PrintVision.pdb"/>
+    </ItemGroup>
+    <Copy SourceFiles="@(NativeRuntime)" DestinationFolder="$(TargetDir)" SkipUnchangedFiles="true"/>
+  </Target>
+</Project>

@@ -1,0 +1,80 @@
+{
+  "families": {
+    "hearts": [
+      1,
+      11
+    ],
+    "camping": [
+      2,
+      23
+    ],
+    "mars": [
+      3,
+      6,
+      8,
+      20,
+      24
+    ],
+    "surf": [
+      4,
+      7
+    ],
+    "prayer": [
+      5
+    ],
+    "nirvana": [
+      9,
+      19,
+      28
+    ],
+    "valencia": [
+      10,
+      18,
+      25,
+      27
+    ],
+    "louis": [
+      12
+    ],
+    "cola": [
+      13
+    ],
+    "antidepressants": [
+      14
+    ],
+    "pray": [
+      15
+    ],
+    "calf": [
+      16,
+      22
+    ],
+    "landscape": [
+      17
+    ],
+    "fairy": [
+      21,
+      26
+    ]
+  },
+  "train": [
+    "hearts",
+    "mars",
+    "surf",
+    "nirvana",
+    "valencia",
+    "pray"
+  ],
+  "development": [
+    "camping",
+    "fairy",
+    "calf"
+  ],
+  "holdout": [
+    "prayer",
+    "louis",
+    "antidepressants",
+    "cola",
+    "landscape"
+  ]
+}
