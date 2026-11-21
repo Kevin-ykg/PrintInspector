@@ -100,7 +100,7 @@ internal static class Bench
             JsonSerializer.Deserialize<Config>(File.ReadAllText(Path.Combine(models, "settings.json")))!;
         var window = new MainWindow();
         var lines = new List<string> {
-            "route,pass,group,native_ms,read_to_render_ms,private_mib,peak_private_mib,flags"
+            "route,pass,group,native_ms,read_to_render_ms,private_mib,peak_private_mib,flags,read_ms,preview_and_interop_ms"
         };
         var process = Process.GetCurrentProcess();
         long peak = 0;
@@ -144,11 +144,13 @@ internal static class Bench
                     var target = new RenderTargetBitmap(960, 402, 96, 96, PixelFormats.Pbgra32);
                     target.Render(visual);
                     var elapsed = sw.Elapsed.TotalMilliseconds;
+                    // 差值含固定缓冲区之外的封送、轮廓生成、位图构造及离屏绘制。
+                    var previewAndInterop = elapsed - o.ReadMilliseconds - o.Report.Millis;
                     lock (gate)
                     {
                         process.Refresh();
                         lines.Add(FormattableString.Invariant(
-                            $"{route},{pass},{id},{o.Report.Millis:F2},{elapsed:F2},{process.PrivateMemorySize64 / 1048576.0:F1},{peak / 1048576.0:F1},{o.Report.Flags}"));
+                            $"{route},{pass},{id},{o.Report.Millis:F2},{elapsed:F2},{process.PrivateMemorySize64 / 1048576.0:F1},{peak / 1048576.0:F1},{o.Report.Flags},{o.ReadMilliseconds:F2},{previewAndInterop:F2}"));
                     }
                     File.WriteAllLines(output, lines);
                 }

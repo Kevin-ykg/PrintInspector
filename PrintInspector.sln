@@ -9,6 +9,7 @@ EndProject
 Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{CABBB269-893F-439E-90EF-92837B5EA172}"
 	ProjectSection(SolutionItems) = preProject
 		docs\工程与调试.md = docs\工程与调试.md
+		docs\性能验证.md = docs\性能验证.md
 		docs\算法与接口.md = docs\算法与接口.md
 		docs\随机森林原理与实现.md = docs\随机森林原理与实现.md
 		docs\分割故障排查.md = docs\分割故障排查.md

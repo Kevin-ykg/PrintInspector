@@ -38,6 +38,9 @@
       <WarningLevel>Level4</WarningLevel>
       <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <Optimization Condition="'$(Configuration)'=='Release'">MaxSpeed</Optimization>
+      <!-- 保留调试运行库和 PDB；单步核查所有局部变量时可关闭 OptimizeVisionKernels。 -->
+      <Optimization Condition="'$(Configuration)'=='Debug' and '$(OptimizeVisionKernels)'!='false'">MaxSpeed</Optimization>
+      <BasicRuntimeChecks Condition="'$(Configuration)'=='Debug' and '$(OptimizeVisionKernels)'!='false'">Default</BasicRuntimeChecks>
     </ClCompile>
     <Link>
       <GenerateDebugInformation>true</GenerateDebugInformation>
@@ -47,6 +50,7 @@
     <ClCompile Include="print.cpp"/>
     <ClCompile Include="refine.cpp"/>
     <ClInclude Include="print.hpp"/>
+    <ClInclude Include="forest_votes.hpp"/>
     <ClInclude Include="refine.hpp"/>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets"/>

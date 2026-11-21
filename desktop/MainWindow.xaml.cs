@@ -113,14 +113,22 @@ public partial class MainWindow : Window
         ResetView();
         ClearResult();
         shown = Groups.SelectedItem is string name ? Path.Combine(root, name) : "";
-        ReadBand();
+        if (busy)
+        {
+            source = null;
+            Render();
+        }
+        else
+            ReadBand();
     }
 
     void ReadBand()
     {
         try
         {
-            source = Directory.Exists(shown) ? Engine.Read(shown, Band.SelectedItem as string ?? "W") : null;
+            string band = Band.SelectedItem as string ?? "W";
+            source = band == "W" && current != null ? current.White :
+                Directory.Exists(shown) ? Engine.Read(shown, band) : null;
             Render();
         }
         catch (Exception e)
@@ -342,12 +350,12 @@ public partial class MainWindow : Window
                     // 解码和 DLL 推理在工作线程运行；冻结的位图可在 await 返回后交给 WPF。
                     current = await Task.Run(
                         () => Engine.Run(path, model, config.thresholds[route.ToString()], cts.Token, settings));
-                    Render();
-                    Export.IsEnabled = true;
+                    ReadBand();
+                    Export.IsEnabled = dest == null;
                     Status.Text =
                         $"{name} · {current.Report.Status} · DLL {current.Report.Millis:F0} ms · 到预览 {sw.ElapsedMilliseconds} ms";
                     if (dest != null)
-                        Engine.Save(Path.Combine(dest, name), current);
+                        await Engine.SaveAsync(Path.Combine(dest, name), current);
                     ok++;
                 }
                 // 单组错误立即呈现，批量则按编号记录并继续；显式取消交给外层统一收尾。
@@ -375,10 +383,11 @@ public partial class MainWindow : Window
             cancel = null;
             Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled = Single.IsEnabled = Batch.IsEnabled = true;
             Stop.IsEnabled = false;
+            Export.IsEnabled = current != null;
         }
     }
 
-    void ExportClick(object sender, RoutedEventArgs e)
+    async void ExportClick(object sender, RoutedEventArgs e)
     {
         if (current == null)
             return;
@@ -389,12 +398,21 @@ public partial class MainWindow : Window
         {
             var dest = Path.Combine(dlg.FolderName, Path.GetFileName(shown) + "-" +
                                                         DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
-            Engine.Save(dest, current);
+            busy = true;
+            Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled =
+                Single.IsEnabled = Batch.IsEnabled = Export.IsEnabled = false;
+            await Engine.SaveAsync(dest, current);
             Status.Text = "已导出 " + dest;
         }
         catch (Exception ex)
         {
             Status.Text = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+            Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled =
+                Single.IsEnabled = Batch.IsEnabled = Export.IsEnabled = true;
         }
     }
 }

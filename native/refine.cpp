@@ -1,4 +1,6 @@
 #include "refine.hpp"
+#include <intrin.h>
+#include <stdexcept>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <cmath>
@@ -205,6 +207,8 @@ void cleanForeground(cv::Mat mask, const cv::Mat &evidence, const cv::Mat &outsi
         else if (area >= std::max(128, noiseArea + 1))
             anchor[id] = 255;
     }
+    distance.release();
+    thick.release();
     cv::Mat nearby(mask.size(), CV_8U);
     for (int y = 0; y < mask.rows; y++)
     {
@@ -269,15 +273,13 @@ void fillSmallHoles(cv::Mat mask, const cv::Mat &evidence, const cv::Mat &outsid
 
 Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv::Point, 8> &offsets,
                       cv::Rect common, const cv::Mat &votes, int threshold, bool pcaRoute,
-                      const MaskSettings &settings, cv::Mat mask)
+                      const MaskSettings &settings, cv::Mat mask, const int *cancel)
 {
     std::array<cv::Mat, 8> aligned;
     for (int b = 0; b < 8; b++)
         aligned[b] = images[b](common + offsets[b]);
     Refinement result;
     cv::Mat outside = exterior(aligned, result.weakBackground);
-    result.excluded = cv::Mat(mask.size(), CV_8U, cv::Scalar(255));
-    outside.copyTo(result.excluded(common));
     const cv::Mat input = votes(common);
     std::array<float, 256> logLut{};
     for (int i = 0; i < 256; i++)
@@ -323,12 +325,17 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
     cv::Mat clothGrid;
     if (pcaRoute && !result.weakBackground)
         clothGrid = clothBrightnessGrid(aligned, outside, logLut, center, scale);
-    cv::Mat evidence = input.clone();
+    auto cancelled = [&] {
+        return cancel && _InterlockedCompareExchange((volatile long *)cancel, 0, 0) != 0;
+    };
+    cv::Mat evidence(input.size(), CV_8U);
     cv::parallel_for_(cv::Range(0, input.rows), [&](const cv::Range &range) {
         cv::Mat brightnessRow;
         for (int y = range.start; y < range.end; y++)
         {
             auto rows = rowsAt(y);
+            if (cancelled())
+                return;
             auto out = evidence.ptr<uchar>(y);
             if (!clothGrid.empty())
             {
@@ -341,27 +348,45 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
                                 clothGrid.row(std::min(iy + 1, clothGrid.rows - 1)), fy - iy, 0, row);
                 cv::resize(row, brightnessRow, {input.cols, 1}, 0, 0, cv::INTER_LINEAR);
             }
+            // 每行只取得一次邻行的树票、屏蔽区和光谱指针，避免在四邻域循环中反复访问矩阵头。
+            struct Neighbor
+            {
+                int dx;
+                const uchar *votes, *excluded, *uv, *ir, *white;
+            };
+            Neighbor neighbors[4];
+            int count = 0;
+            for (const auto delta : std::array<cv::Point, 4>{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}})
+            {
+                const int yy = y + delta.y;
+                if (unsigned(yy) < unsigned(input.rows))
+                    neighbors[count++] = {delta.x,
+                                          input.ptr<uchar>(yy),
+                                          outside.ptr<uchar>(yy),
+                                          aligned[0].ptr<uchar>(yy),
+                                          aligned[6].ptr<uchar>(yy),
+                                          aligned[7].ptr<uchar>(yy)};
+            }
+            const auto *rawVotes = input.ptr<uchar>(y);
+            const auto *excluded = outside.ptr<uchar>(y);
             for (int x = 0; x < input.cols; x++)
             {
-                if (outside.at<uchar>(y, x))
+                if (excluded[x])
                 {
                     out[x] = 0;
                     continue;
                 }
-                // 只在白光、红外和紫外均相似的四邻域内平滑树票，减少跨边缘混合。
-                int total = 4 * input.at<uchar>(y, x), weight = 4;
-                for (const auto delta : std::array<cv::Point, 4>{{{-1, 0}, {1, 0}, {0, -1}, {0, 1}}})
+                int total = 4 * rawVotes[x], weight = 4;
+                for (int k = 0; k < count; k++)
                 {
-                    int xx = x + delta.x, yy = y + delta.y;
-                    if (unsigned(xx) >= unsigned(input.cols) || unsigned(yy) >= unsigned(input.rows) ||
-                        outside.at<uchar>(yy, xx))
-                        continue;
-                    int change = 0;
-                    for (int b : {0, 6, 7})
-                        change = std::max(change, std::abs(rows[b][x] - aligned[b].at<uchar>(yy, xx)));
-                    if (change <= 12)
+                    const auto &neighbor = neighbors[k];
+                    const int xx = x + neighbor.dx;
+                    if (unsigned(xx) < unsigned(input.cols) && !neighbor.excluded[xx] &&
+                        std::abs(rows[0][x] - neighbor.uv[xx]) <= 12 &&
+                        std::abs(rows[6][x] - neighbor.ir[xx]) <= 12 &&
+                        std::abs(rows[7][x] - neighbor.white[xx]) <= 12)
                     {
-                        total += input.at<uchar>(yy, xx);
+                        total += neighbor.votes[xx];
                         weight++;
                     }
                 }
@@ -391,7 +416,7 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
                     // 浅色墨可能主要在一个高信号波段出现偏离，还要求次强波段、
                     // 整体亮度和原始票数同时支持，才恢复为前景。
                     if (!pcaRoute && rows[peakBand][x] >= 32 && first >= 5.f && second >= 1.1f &&
-                        f[8] > center[8] + .8f * scale[8] && input.at<uchar>(y, x) >= threshold / 2)
+                        f[8] > center[8] + .8f * scale[8] && rawVotes[x] >= threshold / 2)
                         value = std::max(value, float(threshold + 24));
                     if (!brightnessRow.empty())
                     {
@@ -410,12 +435,23 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
             }
         }
     });
+    if (cancelled())
+        throw std::runtime_error("Cancelled");
     mask.setTo(0);
     cv::Mat local = mask(common);
     // 调试漏笔可在此比较 input、evidence 与 local，再单步观察连通域清理和补洞。
     cv::compare(evidence, threshold, local, cv::CMP_GE);
     local.setTo(0, outside);
     cleanForeground(local, evidence, outside, threshold, aligned, settings.noiseArea);
+    if (cancelled())
+        throw std::runtime_error("Cancelled");
     fillSmallHoles(local, evidence, outside, threshold, settings);
+    if (common.size() == mask.size())
+        result.excluded = outside;
+    else
+    {
+        result.excluded = cv::Mat(mask.size(), CV_8U, cv::Scalar(255));
+        outside.copyTo(result.excluded(common));
+    }
     return result;
 }

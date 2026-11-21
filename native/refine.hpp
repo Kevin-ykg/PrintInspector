@@ -20,4 +20,4 @@ struct MaskSettings
 // votes 保存原始树票；mask 借用调用方全幅缓冲并写入最终 0/255 分类。
 Refinement refineMask(const std::array<cv::Mat, 8> &bands, const std::array<cv::Point, 8> &offsets,
                       cv::Rect common, const cv::Mat &votes, int threshold, bool pcaRoute,
-                      const MaskSettings &settings, cv::Mat mask);
+                      const MaskSettings &settings, cv::Mat mask, const int *cancel);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows.Media;
@@ -62,7 +63,7 @@ internal sealed record MaskSettings(int NoiseArea, int HoleArea, int HoleAllowan
 }
 
 internal sealed record Output(BitmapSource White, BitmapSource Mask, BitmapSource Score, BitmapSource Contour,
-                              Report Report, byte Threshold, MaskSettings Settings);
+                              Report Report, byte Threshold, MaskSettings Settings, double ReadMilliseconds);
 internal static class Engine
 {
     public static readonly string[] Bands = ["UV", "B", "G", "AM", "R", "FR", "IR", "W"];
@@ -93,7 +94,13 @@ internal static class Engine
             throw new IOException(Marshal.PtrToStringUTF8(ms_error()));
     }
 
-    /// <summary>以 Gray8 解码一帧，并在关闭文件前加载和冻结像素，供工作线程和 UI 共用。</summary>
+    // 轮廓只有透明、半透明填充、实线三种颜色，索引图每像素只需一个字节。
+    static BitmapPalette ContourPalette() => new(new[]
+    {
+        Color.FromArgb(0, 0, 0, 0), Color.FromArgb(38, 0, 244, 145), Color.FromArgb(255, 0, 244, 145)
+    });
+
+    /// <summary>读取八位灰度帧；线性灰阶索引可直接取值，其他调色板先转换。关闭文件前加载并冻结像素，供工作线程和 UI 共用。</summary>
     internal static BitmapSource Read(string folder, string band)
     {
         using var f = File.OpenRead(Path.Combine(folder, band + ".bmp"));
@@ -101,14 +108,19 @@ internal static class Engine
                       .Frames[0];
         if (src.Format.BitsPerPixel != 8)
             throw new IOException("需要 8 位灰度图 " + band);
-        BitmapSource gray = new FormatConvertedBitmap(src, PixelFormats.Gray8, null, 0);
+        // 线性灰阶调色板的索引就是像素值；彩色或非线性调色板仍交给 WIC 转换。
+        BitmapSource gray = src;
+        if (src.Format != PixelFormats.Gray8 && !(src.Format == PixelFormats.Indexed8 &&
+            src.Palette is { } palette && palette.Colors.Select((c, i) =>
+                c.A == 255 && c.R == i && c.G == i && c.B == i).All(identity => identity)))
+            gray = new FormatConvertedBitmap(src, PixelFormats.Gray8, null, 0);
         gray.Freeze();
         return gray;
     }
 
-    static BitmapSource Bitmap(int w, int h, PixelFormat format, byte[] bytes, int stride)
+    static BitmapSource Bitmap(int w, int h, PixelFormat format, byte[] bytes, int stride, BitmapPalette? palette = null)
     {
-        var bitmap = BitmapSource.Create(w, h, 96, 96, format, null, bytes, stride);
+        var bitmap = BitmapSource.Create(w, h, 96, 96, format, palette, bytes, stride);
         bitmap.Freeze();
         return bitmap;
     }
@@ -127,6 +139,7 @@ internal static class Engine
         {
             // 取消回调只能在标志仍有效时写入；using 的作用域先于 finally 中的 FreeHGlobal 结束。
             using var registration = token.Register(() => Marshal.WriteInt32(cancel, 1));
+            long readStart = Stopwatch.GetTimestamp();
             BitmapSource? white = null;
             for (int b = 0; b < 8; b++)
             {
@@ -155,13 +168,18 @@ internal static class Engine
                 if (b == 7)
                     white = im;
             }
+            double readMilliseconds = Stopwatch.GetElapsedTime(readStart).TotalMilliseconds;
             byte[] m = new byte[checked(w * h)], s = new byte[m.Length];
             var rc = ms_run_configured(model, planes, 8, threshold, m, s, m.Length, out var report, cancel,
                                        settings.NoiseArea, settings.HoleArea, settings.HoleAllowance);
             token.ThrowIfCancellationRequested();
             Check(rc);
-            // 四邻域区分轮廓和填充。只改 BGRA 预览层的透明度，保留可用于面积统计的二值掩膜。
-            var contour = new byte[checked(m.Length * 4)];
+            // 原生函数已经归还八帧指针，生成预览时可以解除固定。
+            foreach (var pin in pins)
+                pin.Free();
+            pins.Clear();
+            // 四邻域区分轮廓和填充；三种调色板索引只用于显示。
+            var contour = new byte[m.Length];
             for (int y = 0; y < h; y++)
                 for (int x = 0; x < w; x++)
                 {
@@ -169,19 +187,16 @@ internal static class Engine
                     if (m[i] != 0 && (x == 0 || y == 0 || x == w - 1 || y == h - 1 || m[i - 1] == 0 ||
                                       m[i + 1] == 0 || m[i - w] == 0 || m[i + w] == 0))
                     {
-                        contour[i * 4] = 145;
-                        contour[i * 4 + 1] = 244;
-                        contour[i * 4 + 3] = 255;
+                        contour[i] = 2;
                     }
                     else if (m[i] != 0)
                     {
-                        contour[i * 4] = 145;
-                        contour[i * 4 + 1] = 244;
-                        contour[i * 4 + 3] = 38;
+                        contour[i] = 1;
                     }
                 }
             return new(white!, Bitmap(w, h, PixelFormats.Gray8, m, w), Bitmap(w, h, PixelFormats.Gray8, s, w),
-                       Bitmap(w, h, PixelFormats.Bgra32, contour, w * 4), report, threshold, settings);
+                       Bitmap(w, h, PixelFormats.Indexed8, contour, w, ContourPalette()), report, threshold, settings,
+                       readMilliseconds);
         }
         finally
         {
@@ -189,6 +204,36 @@ internal static class Engine
                 p.Free();
             Marshal.FreeHGlobal(cancel);
         }
+    }
+
+    // RenderTargetBitmap 需要单线程单元；让磁盘写入、整幅渲染与 PNG 编码离开界面线程。
+    internal static Task SaveAsync(string dir, Output result)
+    {
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                try
+                {
+                    Save(dir, result);
+                }
+                finally
+                {
+                    // 主动关闭此导出线程的 WPF 调度器，使离屏渲染资源在批次中及时释放。
+                    System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeShutdown();
+                }
+                finished.SetResult();
+            }
+            catch (Exception ex)
+            {
+                finished.SetException(ex);
+            }
+        })
+        { IsBackground = true };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return finished.Task;
     }
 
     /// <summary>按相机像素尺寸导出；叠加底图始终使用 W，观察窗口的缩放和选定波段均不参与导出。</summary>

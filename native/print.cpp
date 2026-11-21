@@ -1,5 +1,6 @@
 #include "print.hpp"
 #include "refine.hpp"
+#include "forest_votes.hpp"
 #include <opencv2/opencv.hpp>
 #include <opencv2/ml.hpp>
 #include <Windows.h>
@@ -159,16 +160,25 @@ struct Model
     Mat mean, scale;
     PCA pca;
     Ptr<ml::RTrees> forest;
+    ForestVotes fastVotes;
     // 原始 N×10 行转为 N×17（八波段）或 N×(k+2)（PCA）；每一行仍对应同一像素。
     Mat features(const Mat &raw) const
     {
         Mat spectral;
         if (route == 8)
         {
-            spectral.create(raw.rows, 15, CV_32F);
-            raw.colRange(0, 8).copyTo(spectral.colRange(0, 8));
-            for (int b = 0; b < 7; b++)
-                subtract(raw.col(b), raw.col(7), spectral.col(8 + b));
+            Mat all(raw.rows, 17, CV_32F);
+            for (int i = 0; i < raw.rows; i++)
+            {
+                const float *src = raw.ptr<float>(i);
+                float *dst = all.ptr<float>(i);
+                std::copy_n(src, 8, dst);
+                for (int b = 0; b < 7; b++)
+                    dst[8 + b] = src[b] - src[7];
+                dst[15] = src[8];
+                dst[16] = src[9];
+            }
+            return all;
         }
         else
         {
@@ -299,6 +309,7 @@ API int ms_load(const wchar_t *path, void **ctx)
         m->forest = ml::RTrees::create();
         m->forest->read(fs["forest"]);
         require(m->forest->isTrained(), "Empty forest");
+        m->fastVotes.prepare(*m->forest, fs["forest"]);
         *ctx = m.release();
     });
 }
@@ -345,7 +356,9 @@ API int ms_run_configured(void *context, const Plane *p, int n, uint8_t threshol
         int left = 0, right = s.w, firstRow = 0, lastRow = s.h - 1;
         require(threshold > 0, "Threshold must be positive");
         // 各工作线程仅保存当前条带的特征和树票，避免分配整幅浮点特征图。
-        const int tiles = (s.h + 15) / 16;
+        // 小条带将转置前后的特征矩阵限制在缓存内，也缩短取消请求等待的时间。
+        constexpr int rowsPerTile = 4;
+        const int tiles = (s.h + rowsPerTile - 1) / rowsPerTile;
         struct TileResult
         {
             int uncertain = 0;
@@ -370,9 +383,9 @@ API int ms_run_configured(void *context, const Plane *p, int n, uint8_t threshol
                         stopped = true;
                         return;
                     }
-                    int top = 16 * tile;
+                    int top = rowsPerTile * tile;
                     auto &local = stats[tile];
-                    int height = std::min(16, s.h - top);
+                    int height = std::min(rowsPerTile, s.h - top);
                     Mat raw(height * s.w, 10, CV_32F), votes;
                     for (int t = 0; t < height; t++)
                     {
@@ -381,33 +394,44 @@ API int ms_run_configured(void *context, const Plane *p, int n, uint8_t threshol
                         for (int x = 0; x < s.w; x++)
                             s.pixel(x, top + t, ptr, raw.ptr<float>(t * s.w + x));
                     }
-                    m.forest->getVotes(m.features(raw), votes, 0);
-                    require(votes.type() == CV_32S && votes.rows == raw.rows + 1 && votes.cols == 2,
-                            "Invalid class votes");
-                    int pos = votes.at<int>(0, 0) == 1 ? 0 : 1;
+                    Mat features = m.features(raw);
+                    uchar *tileScores = score + size_t(top) * s.w;
+                    if (m.fastVotes.available())
+                        m.fastVotes.evaluate(features, tileScores);
+                    else
+                    {
+                        // 非标准模型使用 OpenCV 的原始投票接口。
+                        m.forest->getVotes(features, votes, 0);
+                        require(votes.type() == CV_32S && votes.rows == raw.rows + 1 && votes.cols == 2,
+                                "Invalid class votes");
+                        int pos = votes.at<int>(0, 0) == 1 ? 0 : 1;
+                        for (int i = 0; i < raw.rows; i++)
+                        {
+                            const int *v = votes.ptr<int>(i + 1);
+                            tileScores[i] = uchar(cvRound(255.0 * v[pos] / (v[0] + v[1])));
+                        }
+                    }
                     for (int t = 0; t < height; t++)
                     {
-                        std::array<const uchar *, 8> ptr{};
-                        bool valid = s.rowInfo(top + t, ptr);
-                        for (int x = 0; x < s.w; x++)
+                        uchar *row = tileScores + t * s.w;
+                        if (top + t < firstRow || top + t > lastRow)
+                            std::fill_n(row, s.w, uchar(0));
+                        else
                         {
-                            int i = t * s.w + x, idx = (top + t) * s.w + x;
-                            auto v = votes.ptr<int>(i + 1);
-                            int val = (valid && x >= left && x < right)
-                                          ? cvRound(255.0 * v[pos] / (v[0] + v[1]))
-                                          : 0;
-                            score[idx] = uchar(val);
-                            mask[idx] = (val >= threshold) ? 255 : 0;
-                            local.uncertain += std::abs(val - int(threshold)) <= 20;
+                            std::fill(row, row + left, uchar(0));
+                            std::fill(row + right, row + s.w, uchar(0));
                         }
+                        for (int x = 0; x < s.w; x++)
+                            local.uncertain += std::abs(int(row[x]) - threshold) <= 20;
                     }
                 }
             },
-            std::min(6, tiles));
+            std::min({12, getNumThreads(), tiles}));
         require(!stopped.load(), "Cancelled");
         Mat output(s.h, s.w, CV_8U, mask), votes(s.h, s.w, CV_8U, score);
         Rect common(left, firstRow, right - left, lastRow - firstRow + 1);
-        auto refined = refineMask(s.im, s.offset, common, votes, threshold, m.route != 8, settings, output);
+        auto refined =
+            refineMask(s.im, s.offset, common, votes, threshold, m.route != 8, settings, output, cancel);
         if (cancel && InterlockedCompareExchange((volatile LONG *)cancel, 0, 0))
             throw std::runtime_error("Cancelled");
         int count = countNonZero(output), uncertain = 0;
