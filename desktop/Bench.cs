@@ -47,6 +47,7 @@ internal static class Bench
         content.Measure(new Size(1280, 800));
         content.Arrange(new Rect(0, 0, 1280, 800));
         content.UpdateLayout();
+        VerifyBandCoordinates();
         VerifyNavigation(window);
         var bitmap = new RenderTargetBitmap(1280, 800, 96, 96, PixelFormats.Pbgra32);
         bitmap.Render(content);
@@ -54,6 +55,27 @@ internal static class Bench
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var stream = File.Create(output)) encoder.Save(stream);
         window.Close();
+    }
+
+    // 检查位移正负号、左右行步长和越界填零；实拍图库可能恰好全部取整为零。
+    private static void VerifyBandCoordinates()
+    {
+        const int w = 13, h = 11;
+        var input = Enumerable.Range(1, w * h).Select(i => (byte)i).ToArray();
+        var src = BitmapSource.Create(w, h, 96, 96, PixelFormats.Gray8, null, input, w);
+        foreach (var (dx, dy) in new[] { (2, -3), (-2, 3), (0, 0) })
+        {
+            var bytes = new byte[w * h];
+            Engine.InWhiteCoordinates(src, dx, dy).CopyPixels(bytes, w, 0);
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x)
+                {
+                    int sx = x + dx, sy = y + dy;
+                    int expected = sx >= 0 && sx < w && sy >= 0 && sy < h ? input[sy * w + sx] : 0;
+                    if (bytes[y * w + x] != expected)
+                        throw new IOException("波段预览与 W 坐标不一致");
+                }
+        }
     }
 
     // 用完成布局后的两个画框及叠加层父控件检查坐标变换。
@@ -65,6 +87,13 @@ internal static class Bench
         var result = (Grid)window.FindName("ResultContent");
         if (!left.ClipToBounds || !right.ClipToBounds || left.ActualWidth <= 0 || right.ActualWidth <= 0)
             throw new IOException("Image viewports have invalid clipping or size");
+
+        // 以窗口内容为共同坐标系，核对操作栏移动后两个画框的阅读顺序。
+        var root = (FrameworkElement)window.Content;
+        var groups = (ListBox)window.FindName("Groups");
+        if (left.TranslatePoint(new Point(left.ActualWidth, 0), root).X > right.TranslatePoint(new Point(), root).X ||
+            right.TranslatePoint(new Point(right.ActualWidth, 0), root).X > groups.TranslatePoint(new Point(), root).X)
+            throw new IOException("原图、结果、操作栏的排列顺序异常");
 
         var pixel = new Point(image.Width * 0.43, image.Height * 0.47);
         Point leftStart = image.RenderTransform.Transform(pixel);

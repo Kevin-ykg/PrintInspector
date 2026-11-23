@@ -18,6 +18,8 @@ scene[:, 40:135, 19:22] = ink[:, None, None]  # 沿布边延伸的独立线条
 scene[:, 126:129, 22:55] = ink[:, None, None]  # 横穿布边方向的真实笔画，与边缘伪线分离
 scene[:, 124:131, 19:23] = fabric[:, None, None]
 scene[:, 160:164, 72:76] = ink[:, None, None]  # 远离图案的十六像素孤点
+# 面积与织纹误提相近，但周围底布没有相同光谱的亮峰；应保留笔画旁独立墨点。
+scene[:, 70:73, 70:73] = ink[:, None, None]
 planes = (Plane * 8)(
     *[
         Plane(a.ctypes.data, a.nbytes, shape[1], shape[0], a.strides[0], b)
@@ -26,6 +28,7 @@ planes = (Plane * 8)(
 )
 for route, t in [(8, 112), (4, 104)]:
     mask, _, r = predict(MODELS / f"rf{route}.yml", planes, shape, t)
+    assert mask[71, 71]
     assert not mask[:, 0:15].any()
     assert not mask[89:101, 112:128].any()
     assert mask[113:118, 90:96].all()

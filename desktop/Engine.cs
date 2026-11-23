@@ -63,7 +63,7 @@ internal sealed record MaskSettings(int NoiseArea, int HoleArea, int HoleAllowan
 }
 
 internal sealed record Output(BitmapSource White, BitmapSource Mask, BitmapSource Score, BitmapSource Contour,
-                              Report Report, byte Threshold, MaskSettings Settings, double ReadMilliseconds);
+                              Report Report, byte Threshold, MaskSettings Settings, double ReadMilliseconds, int[] OffsetsXY);
 internal static class Engine
 {
     public static readonly string[] Bands = ["UV", "B", "G", "AM", "R", "FR", "IR", "W"];
@@ -77,9 +77,9 @@ internal static class Engine
     [DllImport(Lib)]
     static extern IntPtr ms_error();
     [DllImport(Lib)]
-    static extern int ms_run_configured(ModelHandle model, [In] Plane[] planes, int count, byte threshold,
+    static extern int ms_run_registered(ModelHandle model, [In] Plane[] planes, int count, byte threshold,
                              [Out] byte[] mask, [Out] byte[] score, long capacity, out Report report,
-                             IntPtr cancel, int noiseArea, int holeArea, int holeAllowance);
+                             IntPtr cancel, int noiseArea, int holeArea, int holeAllowance, [Out] int[] offsetsXY);
     internal static ModelHandle Load(string path)
     {
         if (ms_version() != 1)
@@ -116,6 +116,19 @@ internal static class Engine
             gray = new FormatConvertedBitmap(src, PixelFormats.Gray8, null, 0);
         gray.Freeze();
         return gray;
+    }
+
+    // 与 DLL 取样方向一致：W 坐标 (x,y) 取原波段 (x+dx,y+dy)。视野外填零。
+    internal static BitmapSource InWhiteCoordinates(BitmapSource band, int dx, int dy)
+    {
+        if (dx == 0 && dy == 0)
+            return band;
+        int w = band.PixelWidth, h = band.PixelHeight;
+        var pixels = new byte[checked(w * h)];
+        var common = new System.Windows.Int32Rect(Math.Max(0, dx), Math.Max(0, dy), w - Math.Abs(dx), h - Math.Abs(dy));
+        int start = Math.Max(0, -dy) * w + Math.Max(0, -dx);
+        band.CopyPixels(common, pixels, w, start);
+        return Bitmap(w, h, PixelFormats.Gray8, pixels, w);
     }
 
     static BitmapSource Bitmap(int w, int h, PixelFormat format, byte[] bytes, int stride, BitmapPalette? palette = null)
@@ -170,8 +183,9 @@ internal static class Engine
             }
             double readMilliseconds = Stopwatch.GetElapsedTime(readStart).TotalMilliseconds;
             byte[] m = new byte[checked(w * h)], s = new byte[m.Length];
-            var rc = ms_run_configured(model, planes, 8, threshold, m, s, m.Length, out var report, cancel,
-                                       settings.NoiseArea, settings.HoleArea, settings.HoleAllowance);
+            var offsetsXY = new int[16];
+            var rc = ms_run_registered(model, planes, 8, threshold, m, s, m.Length, out var report, cancel,
+                                       settings.NoiseArea, settings.HoleArea, settings.HoleAllowance, offsetsXY);
             token.ThrowIfCancellationRequested();
             Check(rc);
             // 原生函数已经归还八帧指针，生成预览时可以解除固定。
@@ -196,7 +210,7 @@ internal static class Engine
                 }
             return new(white!, Bitmap(w, h, PixelFormats.Gray8, m, w), Bitmap(w, h, PixelFormats.Gray8, s, w),
                        Bitmap(w, h, PixelFormats.Indexed8, contour, w, ContourPalette()), report, threshold, settings,
-                       readMilliseconds);
+                       readMilliseconds, offsetsXY);
         }
         finally
         {

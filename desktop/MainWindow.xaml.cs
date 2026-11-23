@@ -129,6 +129,11 @@ public partial class MainWindow : Window
             string band = Band.SelectedItem as string ?? "W";
             source = band == "W" && current != null ? current.White :
                 Directory.Exists(shown) ? Engine.Read(shown, band) : null;
+            if (source != null && current != null && band != "W")
+            {
+                int index = Array.IndexOf(Engine.Bands, band) * 2;
+                source = Engine.InWhiteCoordinates(source, current.OffsetsXY[index], current.OffsetsXY[index + 1]);
+            }
             Render();
         }
         catch (Exception e)
@@ -197,6 +202,10 @@ public partial class MainWindow : Window
         MatrixTransform Transform(Canvas pane) => new(scale, 0, 0, scale,
             pane.ActualWidth * 0.5 - center.X * source.PixelWidth * scale,
             pane.ActualHeight * 0.5 - center.Y * source.PixelHeight * scale);
+        // 放大到单像素时两框使用相同的最近邻显示，避免二值边缘被插值成灰带。
+        var sampling = scale >= 1 ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.Linear;
+        RenderOptions.SetBitmapScalingMode(Original, sampling);
+        RenderOptions.SetBitmapScalingMode(ResultContent, sampling);
         Original.RenderTransform = Transform(OriginalPane);
         ResultContent.RenderTransform = Transform(ResultPane);
     }

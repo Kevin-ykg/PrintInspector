@@ -343,6 +343,14 @@ API int ms_run_configured(void *context, const Plane *p, int n, uint8_t threshol
                           uint8_t *score, int64_t cap, Result *result, const int *cancel, int noiseArea,
                           int holeArea, int holeAllowance)
 {
+    return ms_run_registered(context, p, n, threshold, mask, score, cap, result, cancel, noiseArea, holeArea,
+                             holeAllowance, nullptr);
+}
+
+API int ms_run_registered(void *context, const Plane *p, int n, uint8_t threshold, uint8_t *mask,
+                          uint8_t *score, int64_t cap, Result *result, const int *cancel, int noiseArea,
+                          int holeArea, int holeAllowance, int *offsetsXY)
+{
     return guarded([&] {
         require(noiseArea >= 0 && noiseArea <= 1024 && holeArea >= 0 && holeArea <= 8192 &&
                     holeAllowance >= 0 && holeAllowance <= 255,
@@ -447,6 +455,12 @@ API int ms_run_configured(void *context, const Plane *p, int n, uint8_t threshol
             s.flags |= 4;
         if (refined.weakBackground)
             s.flags |= 8;
+        if (offsetsXY)
+            for (int b = 0; b < 8; ++b)
+            {
+                offsetsXY[2 * b] = s.offset[b].x;
+                offsetsXY[2 * b + 1] = s.offset[b].y;
+            }
         *result = {
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
             s.flags, count, s.maxShift, s.minResponse};

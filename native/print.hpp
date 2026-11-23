@@ -30,6 +30,10 @@ API int ms_run(void *context, const Plane *planes, int count, uint8_t threshold,
 API int ms_run_configured(void *context, const Plane *planes, int count, uint8_t threshold, uint8_t *mask,
                           uint8_t *score, int64_t capacity, Result *result, const int *cancel, int noiseArea,
                           int holeArea, int holeAllowance);
+// offsetsXY 可为空，非空时由调用方提供 16 个 int，返回各波段实际使用的 (dx,dy)。
+API int ms_run_registered(void *context, const Plane *planes, int count, uint8_t threshold, uint8_t *mask,
+                          uint8_t *score, int64_t capacity, Result *result, const int *cancel, int noiseArea,
+                          int holeArea, int holeAllowance, int *offsetsXY);
 // 训练时每行为八个波段强度和两个白光纹理量；采样点使用 W 图坐标。
 API int ms_sample(const Plane *planes, int count, const int *xy, int rows, float *output);
 API int ms_train(const float *data, const int *labels, int rows, int route, const wchar_t *filename);
