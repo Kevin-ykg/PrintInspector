@@ -28,9 +28,14 @@ public partial class MainWindow : Window
         Band.SelectedIndex = 7;
         Layer.ItemsSource = new[] { "轮廓叠加", "二值掩膜", "前景得分" };
         Layer.SelectedIndex = 0;
-        Route.ItemsSource = new[] { "八波段随机森林", "PCA 随机森林" };
+        Route.ItemsSource = new[] { "八波段随机森林", "PCA 随机森林", "自适应布底" };
         Route.SelectedIndex = 0;
-        Route.SelectionChanged += (_, _) => ClearResult();
+        Route.SelectionChanged += (_, _) =>
+        {
+            ClearResult();
+            SetMaskSettings(maskSettings);
+            ReadBand();
+        };
         try
         {
             config =
@@ -75,7 +80,7 @@ public partial class MainWindow : Window
     {
         current = null;
         ResultView.Source = Edges.Source = null;
-        Export.IsEnabled = false;
+        SetExportEnabled(false);
     }
 
     void BrowseClick(object sender, RoutedEventArgs e)
@@ -90,8 +95,8 @@ public partial class MainWindow : Window
     internal void OpenFolder(string folder)
     {
         root = Directory.Exists(Path.Combine(folder, "没有膜片")) ? Path.Combine(folder, "没有膜片") : folder;
-        var dirs = Directory.GetDirectories(root).Where(d => Directory.EnumerateFiles(d, "*.bmp").Any()).ToList();
-        if (Directory.EnumerateFiles(root, "*.bmp").Any())
+        var dirs = Directory.GetDirectories(root).Where(Engine.ContainsBands).ToList();
+        if (Engine.ContainsBands(root))
         {
             dirs = [root];
             root = Path.GetDirectoryName(root)!;
@@ -128,7 +133,7 @@ public partial class MainWindow : Window
         {
             string band = Band.SelectedItem as string ?? "W";
             source = band == "W" && current != null ? current.White :
-                Directory.Exists(shown) ? Engine.Read(shown, band) : null;
+                Directory.Exists(shown) ? Engine.Read(shown, band, Route.SelectedIndex == 2) : null;
             if (source != null && current != null && band != "W")
             {
                 int index = Array.IndexOf(Engine.Bands, band) * 2;
@@ -157,7 +162,7 @@ public partial class MainWindow : Window
     void Render()
     {
         Original.Source = source;
-        // 分数图直接显示森林投票；只有轮廓模式才把二值结果绘到当前波段底图上。
+        // 分数图显示当前路线的森林得票或布底偏离程度。轮廓叠加使用同坐标的波段底图。
         ResultView.Source = Layer.SelectedIndex switch
         {
             1 => current?.Mask,
@@ -290,16 +295,26 @@ public partial class MainWindow : Window
     void SetMaskSettings(MaskSettings settings)
     {
         maskSettings = settings;
-        Tune.Content = settings == MaskSettings.Default ? "掩膜参数…" : "掩膜参数 · 已调整";
-        Tune.ToolTip = $"去噪面积 {settings.NoiseArea}，补洞面积 {settings.HoleArea}，补洞容差 {settings.HoleAllowance}";
+        var defaults = MaskSettings.Default;
+        bool adaptive = Route.SelectedIndex == 2;
+        bool adjusted = adaptive
+            ? (settings.FabricThreshold, settings.FabricNoiseArea, settings.FabricProtection) !=
+              (defaults.FabricThreshold, defaults.FabricNoiseArea, defaults.FabricProtection)
+            : (settings.NoiseArea, settings.HoleArea, settings.HoleAllowance) !=
+              (defaults.NoiseArea, defaults.HoleArea, defaults.HoleAllowance);
+        Tune.Content = adjusted ? "掩膜参数 · 已调整" : "掩膜参数…";
+        Tune.ToolTip = adaptive
+            ? $"前景阈值 {settings.FabricThreshold}，去噪面积 {settings.FabricNoiseArea}，小点保护分差 {settings.FabricProtection}"
+            : $"去噪面积 {settings.NoiseArea}，补洞面积 {settings.HoleArea}，补洞容差 {settings.HoleAllowance}";
     }
 
     async void TuneClick(object sender, RoutedEventArgs e)
     {
         if (busy)
             return;
-        bool canRun = config != null && Groups.SelectedItem != null;
-        var dialog = new MaskSettingsWindow(maskSettings, canRun) { Owner = this };
+        bool adaptive = Route.SelectedIndex == 2;
+        bool canRun = (adaptive || config != null) && Groups.SelectedItem != null;
+        var dialog = new MaskSettingsWindow(maskSettings, canRun, adaptive) { Owner = this };
         if (dialog.ShowDialog() != true)
             return;
 
@@ -313,7 +328,7 @@ public partial class MainWindow : Window
 
     async void BatchClick(object sender, RoutedEventArgs e)
     {
-        if (busy || config == null || Groups.SelectedItem == null)
+        if (busy || Groups.SelectedItem == null || (Route.SelectedIndex != 2 && config == null))
             return;
 
         var dialog = new OpenFolderDialog { Title = "选择批量结果目录" };
@@ -329,7 +344,7 @@ public partial class MainWindow : Window
     /// <summary>在给定目录逐组导出批量结果。目录为空时只预览当前样品。</summary>
     async Task Run(string? dest)
     {
-        if (busy || config == null || Groups.SelectedItem == null)
+        if (busy || Groups.SelectedItem == null || (Route.SelectedIndex != 2 && config == null))
             return;
 
         bool all = dest != null;
@@ -344,8 +359,10 @@ public partial class MainWindow : Window
         int ok = 0;
         try
         {
-            int route = Route.SelectedIndex == 1 ? config.pca : 8;
-            using var model = Engine.Load(Path.Combine(Models, $"rf{route}.yml"));
+            int route = Route.SelectedIndex == 1 ? config!.pca : 8;
+            bool adaptive = Route.SelectedIndex == 2;
+            byte threshold = adaptive ? settings.FabricThreshold : config!.thresholds[route.ToString()];
+            using var model = adaptive ? null : Engine.Load(Path.Combine(Models, $"rf{route}.yml"));
             foreach (var name in names)
             {
                 cts.Token.ThrowIfCancellationRequested();
@@ -358,9 +375,8 @@ public partial class MainWindow : Window
                     var sw = Stopwatch.StartNew();
                     // 解码和 DLL 推理在工作线程运行；冻结的位图可在 await 返回后交给 WPF。
                     current = await Task.Run(
-                        () => Engine.Run(path, model, config.thresholds[route.ToString()], cts.Token, settings));
+                        () => Engine.Run(path, model, threshold, cts.Token, settings));
                     ReadBand();
-                    Export.IsEnabled = dest == null;
                     Status.Text =
                         $"{name} · {current.Report.Status} · DLL {current.Report.Millis:F0} ms · 到预览 {sw.ElapsedMilliseconds} ms";
                     if (dest != null)
@@ -392,26 +408,53 @@ public partial class MainWindow : Window
             cancel = null;
             Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled = Single.IsEnabled = Batch.IsEnabled = true;
             Stop.IsEnabled = false;
-            Export.IsEnabled = current != null;
+            SetExportEnabled(current != null);
         }
+    }
+
+    void SetExportEnabled(bool enabled) =>
+        Export.IsEnabled = ExportMask.IsEnabled = ExportCutout.IsEnabled = enabled;
+
+    async void ExportPngClick(object sender, RoutedEventArgs e)
+    {
+        if (busy || current is not { } result)
+            return;
+        bool transparent = sender == ExportCutout;
+        var dialog = new SaveFileDialog
+        {
+            Title = transparent ? "导出白光透明图" : "导出二值掩膜",
+            Filter = "PNG 图像 (*.png)|*.png",
+            DefaultExt = ".png",
+            FileName = Path.GetFileName(shown) + (transparent ? "-白光透明图.png" : "-掩膜.png")
+        };
+        if (dialog.ShowDialog(this) == true)
+            await ExportResult(dialog.FileName, () => Engine.SavePngAsync(dialog.FileName, result, transparent));
     }
 
     async void ExportClick(object sender, RoutedEventArgs e)
     {
-        if (current == null)
+        if (busy || current is not { } result)
             return;
-        var dlg = new OpenFolderDialog();
-        if (dlg.ShowDialog() != true)
+        var dialog = new OpenFolderDialog();
+        if (dialog.ShowDialog(this) != true)
             return;
+        var dest = Path.Combine(dialog.FolderName, Path.GetFileName(shown) + "-" +
+                                                    DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
+        await ExportResult(dest, () => Engine.SaveAsync(dest, result));
+    }
+
+    // 保存期间固定当前结果与样品选择，两个 PNG 可单独保存，不必生成整套结果。
+    async Task ExportResult(string destination, Func<Task> save)
+    {
         try
         {
-            var dest = Path.Combine(dlg.FolderName, Path.GetFileName(shown) + "-" +
-                                                        DateTime.Now.ToString("yyyyMMdd-HHmmss-fff"));
             busy = true;
             Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled =
-                Single.IsEnabled = Batch.IsEnabled = Export.IsEnabled = false;
-            await Engine.SaveAsync(dest, current);
-            Status.Text = "已导出 " + dest;
+                Single.IsEnabled = Batch.IsEnabled = false;
+            SetExportEnabled(false);
+            Status.Text = "正在导出…";
+            await save();
+            Status.Text = "已导出 " + destination;
         }
         catch (Exception ex)
         {
@@ -421,7 +464,8 @@ public partial class MainWindow : Window
         {
             busy = false;
             Tune.IsEnabled = Browse.IsEnabled = Route.IsEnabled = Groups.IsEnabled =
-                Single.IsEnabled = Batch.IsEnabled = Export.IsEnabled = true;
+                Single.IsEnabled = Batch.IsEnabled = true;
+            SetExportEnabled(current != null);
         }
     }
 }

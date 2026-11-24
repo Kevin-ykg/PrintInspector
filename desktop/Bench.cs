@@ -12,12 +12,17 @@ internal static class Bench
 {
     // 用真实解码、原生推理和 WPF 离屏渲染覆盖操作路径。
     // 该计时不包含屏幕呈现和磁盘导出。
-    internal static void VerifyWindow(string root, string output)
+    internal static void VerifyWindow(string root, string output, bool adaptive = false)
     {
         var window = new MainWindow();
         window.OpenFolder(Path.GetFullPath(root));
         var groups = (ListBox)window.FindName("Groups");
         groups.SelectedIndex = 0;
+        if (adaptive)
+        {
+            VerifyFabricDecode();
+            ((ComboBox)window.FindName("Route")).SelectedIndex = 2;
+        }
         var run = (Button)window.FindName("Single");
         run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
         var status = (TextBlock)window.FindName("Status");
@@ -55,6 +60,64 @@ internal static class Bench
         encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using (var stream = File.Create(output)) encoder.Save(stream);
         window.Close();
+    }
+
+    // 刻意使用奇数宽度、非零填充和方向不对称的彩色像素，覆盖真实图库不容易暴露的行布局错误。
+    private static void VerifyFabricDecode()
+    {
+        var folder = Directory.CreateTempSubdirectory("PrintInspector-bmp-");
+        string path = Path.Combine(folder.FullName, "W.bmp");
+        try
+        {
+            foreach (int signedHeight in new[] { 2, -2 })
+            {
+                const int width = 3, stride = 12;
+                using (var file = new BinaryWriter(File.Create(path)))
+                {
+                    file.Write((ushort)0x4d42);
+                    file.Write(54 + stride * 2);
+                    file.Write(0);
+                    file.Write(54);
+                    file.Write(40);
+                    file.Write(width);
+                    file.Write(signedHeight);
+                    file.Write((ushort)1);
+                    file.Write((ushort)24);
+                    file.Write(new byte[24]);
+                    for (int row = 0; row < 2; ++row)
+                    {
+                        int y = signedHeight > 0 ? 1 - row : row;
+                        for (int x = 0; x < width; ++x)
+                            file.Write(new[] { (byte)(y * 91 + x * 17), (byte)11, (byte)34 });
+                        file.Write(new byte[] { 127, 128, 129 });
+                    }
+                }
+                var decoded = Engine.ReadFabricBmp(folder.FullName, "W", out int w, out int h);
+                var reference = new byte[6];
+                Engine.Read(folder.FullName, "W", true).CopyPixels(reference, width, 0);
+                if (w != width || h != 2 || decoded == null || !reference.SequenceEqual(decoded))
+                    throw new IOException("彩色 BMP 快速解码与 WIC 参照不一致");
+            }
+        }
+        finally
+        {
+            File.Delete(path);
+            folder.Delete();
+        }
+    }
+
+    // 与界面使用相同的解码、推理和单项导出。外部脚本逐像素核对颜色和 Alpha。
+    internal static void VerifyPngExport(string sample, string output)
+    {
+        var result = Engine.Run(sample, null, MaskSettings.Default.FabricThreshold, CancellationToken.None);
+        Directory.CreateDirectory(output);
+        Engine.SavePngAsync(Path.Combine(output, "mask.png"), result, false).GetAwaiter().GetResult();
+        Engine.SavePngAsync(Path.Combine(output, "white-cutout.png"), result, true).GetAwaiter().GetResult();
+        File.WriteAllText(Path.Combine(output, "metrics.json"), JsonSerializer.Serialize(new
+        {
+            nativeMs = result.Report.Millis,
+            offsets = result.OffsetsXY
+        }));
     }
 
     // 检查位移正负号、左右行步长和越界填零；实拍图库可能恰好全部取整为零。
@@ -122,7 +185,7 @@ internal static class Bench
         window.ResetView();
     }
 
-    internal static void Run(string root, string output)
+    internal static void Run(string root, string output, bool adaptive = false)
     {
         var models = Path.Combine(AppContext.BaseDirectory, "models");
         var cfg =
@@ -147,14 +210,14 @@ internal static class Bench
             null, 0, 30);
         if (Directory.Exists(Path.Combine(root, "没有膜片")))
             root = Path.Combine(root, "没有膜片");
-        foreach (var route in new[] { cfg.pca, 8 })
+        foreach (var route in adaptive ? new[] { 0 } : new[] { cfg.pca, 8 })
         {
             lock (gate)
             {
                 peak = 0;
             }
-            using var handle = Engine.Load(Path.Combine(models, $"rf{route}.yml"));
-            int passes = route == 8 ? 2 : 1;
+            using var handle = adaptive ? null : Engine.Load(Path.Combine(models, $"rf{route}.yml"));
+            int passes = adaptive || route == 8 ? 2 : 1;
             for (int pass = 1; pass <= passes; pass++)
             {
                 var ids = Directory.GetDirectories(root).Where(d => File.Exists(Path.Combine(d, "W.bmp"))).Select(d => new DirectoryInfo(d).Name);
@@ -162,7 +225,7 @@ internal static class Bench
                 {
                     var sw = Stopwatch.StartNew();
                     var o = Engine.Run(Path.Combine(root, id.ToString()), handle,
-                                       cfg.thresholds[route.ToString()], CancellationToken.None);
+                                       adaptive ? (byte)128 : cfg.thresholds[route.ToString()], CancellationToken.None);
                     var visual = new DrawingVisual();
                     using (var ctx = visual.RenderOpen())
                     {

@@ -7,7 +7,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
-from run import DATA, OUT
+from run import sample_folder, OUT
 
 # 原分辨率 W 坐标 (左,上,右,下)，末项指明预期墨层是否较背景亮。
 REGIONS = {
@@ -99,7 +99,7 @@ def main():
             ]
         )
         for group, (x, y, r, b, bright) in REGIONS.items():
-            w = np.asarray(Image.open(DATA / str(group) / "W.bmp").convert("L"))[y:b, x:r]
+            w = np.asarray(Image.open(sample_folder(group) / "W.bmp").convert("L"))[y:b, x:r]
             for route in (8, 4):
                 folder = Path(f"rf{route}") / str(group)
                 stages = [("votes", args.results / folder / "votes.png")]

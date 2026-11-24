@@ -41,3 +41,12 @@ API int ms_train(const float *data, const int *labels, int rows, int route, cons
 API int ms_sample_mode(const Plane *p, int count, const int *xy, int rows, float *output, int relative);
 
 API int ms_score_rows(void *context, const float *features, int rows, uint8_t *score);
+
+// 当前画面的裸布拟合空间光谱场；得分为相对布底的残差，接口不需要训练模型。
+API int ms_run_fabric(const Plane *p, int n, uint8_t threshold, uint8_t *mask, uint8_t *score,
+                      int64_t capacity, Result *result, const int *cancel, int *offsetsXY);
+
+// 可调布底接口。noiseArea 为原图像素数，0 关闭孤点过滤。保护分差用于保留强响应孤点；台面屏蔽及贴边清理独立生效。
+API int ms_run_fabric_configured(const Plane *p, int n, uint8_t threshold, uint8_t *mask, uint8_t *score,
+                                 int64_t capacity, Result *result, const int *cancel, int *offsetsXY,
+                                 int noiseArea, int protectionMargin);

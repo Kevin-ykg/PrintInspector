@@ -49,6 +49,10 @@
   <ItemGroup>
     <ClCompile Include="print.cpp"/>
     <ClCompile Include="refine.cpp"/>
+    <ClCompile Include="fabric/segmentation.cpp"/>
+    <ClCompile Include="fabric/refinement.cpp"/>
+    <ClInclude Include="fabric/segmentation.h"/>
+    <ClInclude Include="fabric/refinement.h"/>
     <ClInclude Include="print.hpp"/>
     <ClInclude Include="forest_votes.hpp"/>
     <ClInclude Include="refine.hpp"/>

@@ -1,4 +1,5 @@
 #include "print.hpp"
+#include "fabric/segmentation.h"
 #include "refine.hpp"
 #include "forest_votes.hpp"
 #include <opencv2/opencv.hpp>
@@ -465,4 +466,145 @@ API int ms_run_registered(void *context, const Plane *p, int n, uint8_t threshol
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
             s.flags, count, s.maxShift, s.minResponse};
     });
+}
+
+// 对达到分割阈值的前景按八邻域分组。只去掉面积小且整块都缺少强响应的区域，
+// 保留有清晰墨层证据的小点，以及已经连到笔画上的边缘。得分图保留供复核。
+static void cleanFabricComponents(cv::Mat &mask, const cv::Mat &score, const cv::Mat &outside,
+                                  int areaLimit, int threshold, int protectionMargin, const int *cancel)
+{
+    const bool hasExterior = cv::countNonZero(outside) != 0;
+    if (!hasExterior && areaLimit == 0)
+        return;
+    cv::Mat labels, stats, centroids;
+    const int count = cv::connectedComponentsWithStats(mask, labels, stats, centroids, 8, CV_32S);
+    cv::Mat nearExterior;
+    // 复用森林的布边判据思路。仅当完整分量几乎都贴着已识别的台面，且沿边延伸时才删除。
+    if (hasExterior)
+        cv::dilate(outside, nearExterior, cv::getStructuringElement(cv::MORPH_ELLIPSE, {31, 31}));
+    const int strongScore = std::min(255, threshold + protectionMargin);
+    const int strokeScore = std::min(strongScore, threshold + 8);
+    std::vector<uint8_t> remove(count);
+    std::vector<int> strokeSupport(count), edgeSupport(count);
+    for (int i = 1; i < count; ++i)
+        remove[i] = stats.at<int>(i, cv::CC_STAT_AREA) <= areaLimit;
+    for (int y = 0; y < mask.rows; ++y)
+    {
+        const auto *ids = labels.ptr<int>(y);
+        const auto *values = score.ptr<uint8_t>(y);
+        const auto *edge = hasExterior ? nearExterior.ptr<uint8_t>(y) : nullptr;
+        for (int x = 0; x < mask.cols; ++x)
+        {
+            const int id = ids[x];
+            if (id && edge && edge[x])
+                ++edgeSupport[id];
+            if (remove[id] && values[x] >= strokeScore)
+            {
+                if (values[x] >= strongScore)
+                    remove[id] = 0;
+                else
+                    ++strokeSupport[id];
+            }
+        }
+    }
+    // 连续弱笔画由整段响应支撑，即使没有孤立高峰也保留。短小或松散布纹仍按原保护门限筛选。
+    for (int i = 1; i < count; ++i)
+    {
+        const auto *component = stats.ptr<int>(i);
+        const int width = component[cv::CC_STAT_WIDTH], height = component[cv::CC_STAT_HEIGHT];
+        const int length = std::max(width, height), thickness = std::min(width, height);
+        const int area = component[cv::CC_STAT_AREA];
+        if (length >= 24 && double(length) * length >= 4.0 * area && edgeSupport[i] >= .96 * area)
+            remove[i] = 1;
+        else if (length >= 8 && length >= 3 * thickness && 3 * strokeSupport[i] >= 2 * area)
+            remove[i] = 0;
+    }
+    if (cancel && InterlockedCompareExchange((volatile LONG *)cancel, 0, 0))
+        throw std::runtime_error("Cancelled");
+    for (int y = 0; y < mask.rows; ++y)
+    {
+        const auto *ids = labels.ptr<int>(y);
+        auto *pixels = mask.ptr<uint8_t>(y);
+        for (int x = 0; x < mask.cols; ++x)
+            if (remove[ids[x]])
+                pixels[x] = 0;
+    }
+}
+
+API int ms_run_fabric_configured(const Plane *p, int n, uint8_t threshold, uint8_t *mask, uint8_t *score,
+                                 int64_t capacity, Result *result, const int *cancel, int *offsetsXY,
+                                 int noiseArea, int protectionMargin)
+{
+    return guarded([&] {
+        auto start = std::chrono::steady_clock::now();
+        require(mask && score && mask != score && result && threshold > 0 && threshold < 255,
+                "Invalid output or threshold");
+        require(noiseArea >= 0 && noiseArea <= 8192 && protectionMargin >= 1 && protectionMargin <= 127,
+                "Invalid fabric noise settings");
+        Stack stack(p, n);
+        require(capacity >= int64_t(stack.w) * stack.h, "Output too small");
+        cv::Rect bounds(0, 0, stack.w, stack.h), common = bounds;
+        std::array<cv::Mat, 8> aligned;
+        std::array<const uint8_t *, 8> bands;
+        for (int b = 0; b < 8; ++b)
+            common &= bounds - stack.offset[b];
+        for (int b = 0; b < 8; ++b)
+        {
+            aligned[b] = stack.im[b](common + stack.offset[b]);
+            if (!aligned[b].isContinuous())
+                aligned[b] = aligned[b].clone();
+            bands[b] = aligned[b].ptr<uint8_t>();
+        }
+        cv::Mat m(stack.h, stack.w, CV_8U, mask), s(stack.h, stack.w, CV_8U, score);
+        cv::Mat workMask = m, workScore = s;
+        if (common != bounds)
+        {
+            workMask = cv::Mat(common.size(), CV_8U);
+            workScore = cv::Mat(common.size(), CV_8U);
+        }
+        bool ambiguousExterior = false;
+        const cv::Mat outside = detectDarkExterior(aligned, ambiguousExterior, true);
+        if (!spectral::segment(bands, common.width, common.height, threshold, workScore.data, workMask.data,
+                               outside.ptr<uint8_t>(), cancel))
+            stack.flags |= 8;
+        if (ambiguousExterior)
+            stack.flags |= 16;
+        workMask.setTo(0, outside);
+        workScore.setTo(0, outside);
+        // 配准时产生的连续副本只在光谱计算阶段使用，去噪分配标签图前先释放它们。
+        for (auto &band : aligned)
+            band.release();
+        cleanFabricComponents(workMask, workScore, outside, noiseArea, threshold, protectionMargin, cancel);
+        if (cancel && InterlockedCompareExchange((volatile LONG *)cancel, 0, 0))
+            throw std::runtime_error("Cancelled");
+        if (common != bounds)
+        {
+            m.setTo(0);
+            s.setTo(0);
+            workMask.copyTo(m(common));
+            workScore.copyTo(s(common));
+        }
+        if (offsetsXY)
+            for (int b = 0; b < 8; ++b)
+            {
+                offsetsXY[2 * b] = stack.offset[b].x;
+                offsetsXY[2 * b + 1] = stack.offset[b].y;
+            }
+        int count = countNonZero(workMask);
+        if (!count)
+            stack.flags |= 4;
+        if (countNonZero(workMask.row(0)) || countNonZero(workMask.row(workMask.rows - 1)) ||
+            countNonZero(workMask.col(0)) || countNonZero(workMask.col(workMask.cols - 1)))
+            stack.flags |= 2;
+        *result = {
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count(),
+            stack.flags, count, stack.maxShift, stack.minResponse};
+    });
+}
+
+
+API int ms_run_fabric(const Plane *p, int n, uint8_t threshold, uint8_t *mask, uint8_t *score,
+                      int64_t capacity, Result *result, const int *cancel, int *offsetsXY)
+{
+    return ms_run_fabric_configured(p, n, threshold, mask, score, capacity, result, cancel, offsetsXY, 0, 32);
 }

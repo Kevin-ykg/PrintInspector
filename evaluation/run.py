@@ -3,6 +3,7 @@
 import argparse
 import ctypes as C
 import csv
+import hashlib
 import json
 import os
 import time
@@ -15,10 +16,39 @@ BANDS = "UV B G AM R FR IR W".split()
 SETS = json.loads((ROOT / "evaluation/sets.json").read_text("utf8"))
 SEEDS = json.loads((ROOT / "evaluation/seed_regions.json").read_text("utf8"))["groups"]
 DATA = Path(os.environ.get("PRINTVISION_DATA", ROOT.parent / "锐视光电" / "没有膜片"))
-GROUPS = sorted(int(d.name) for d in DATA.iterdir() if d.is_dir() and d.name.isdecimal())
 OUT = Path(os.environ.get("PRINTVISION_RESULTS", ROOT / "results" / "无膜片"))
 MODELS = Path(os.environ.get("PRINTVISION_MODELS", ROOT / "models"))
 RELATIVE = int(os.environ.get("PRINTVISION_RELATIVE", "1"))
+
+
+# 历史参考图与种子使用原编号。生产图库可以任意改名，离线复测用 W 帧指纹恢复样品身份。
+def sample_folders():
+    folders = {int(d.name): d for d in DATA.iterdir() if d.is_dir() and d.name.isdecimal()}
+    if DATA.resolve() != (ROOT.parent / "锐视光电" / "没有膜片").resolve():
+        return folders
+    fingerprints = json.loads((ROOT / "evaluation/historical_white_sha256.json").read_text("utf8"))
+    known = {digest: int(key) for key, digest in fingerprints.items()}
+    result = {}
+    for folder in folders.values():
+        white = folder / "W.bmp"
+        if not white.is_file():
+            continue
+        with white.open("rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if digest in known:
+            key = known[digest]
+            if key in result:
+                raise ValueError(f"历史样品 {key} 重复出现：{folder}")
+            result[key] = folder
+    return result
+
+
+SAMPLE_FOLDERS = sample_folders()
+GROUPS = sorted(SAMPLE_FOLDERS)
+
+
+def sample_folder(g):
+    return SAMPLE_FOLDERS[g]
 
 
 class Plane(C.Structure):
@@ -78,9 +108,9 @@ def split(g):
 def group(g):
     imgs = []
     for b in BANDS:
-        with Image.open(DATA / str(g) / (b + ".bmp")) as img:
-            if img.mode not in ("L", "P"):
-                raise ValueError("Expected Gray8")
+        with Image.open(sample_folder(g) / (b + ".bmp")) as img:
+            if img.mode not in ("L", "P", "RGB"):
+                raise ValueError(f"{b}.bmp 的模式 {img.mode} 不受支持，需要灰度、索引色或 RGB 图像")
             imgs.append(np.array(img.convert("L")))
     planes = (Plane * 8)(
         *[

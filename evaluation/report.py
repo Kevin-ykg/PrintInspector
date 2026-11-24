@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from run import DATA, GROUPS, MODELS, OUT
+from run import sample_folder, GROUPS, MODELS, OUT
 
 
 def edge_score(mask, reference):
@@ -60,7 +60,7 @@ def report():
         "5 号上部高对比文字，取原图 x=[280,2100)、y=[100,530) 的白光 Otsu 轮廓作近似参考，计算横纵各容许 2 像素的边界 F1。该单项用于检查清晰笔画的边缘贴合度。",
     ]
     crop = np.s_[100:530, 280:2100]
-    white = np.array(Image.open(DATA / "5" / "W.bmp"))[crop]
+    white = np.array(Image.open(sample_folder(5) / "W.bmp"))[crop]
     _, reference = cv2.threshold(white, 0, 255, cv2.THRESH_BINARY | cv2.THRESH_OTSU)
     for route in routes:
         path = OUT / f"rf{route}" / "5"
@@ -126,7 +126,7 @@ def report():
         base = OUT / "rf8" / str(g)
         for x, (caption, path) in enumerate(
             [
-                ("W", DATA / str(g) / "W.bmp"),
+                ("W", sample_folder(g) / "W.bmp"),
                 ("Raw votes", base / "votes.png"),
                 ("Mask", base / "mask.png"),
                 ("Overlay", base / "overlay.jpg"),

@@ -21,3 +21,7 @@ struct MaskSettings
 Refinement refineMask(const std::array<cv::Mat, 8> &bands, const std::array<cv::Point, 8> &offsets,
                       cv::Rect common, const cv::Mat &votes, int threshold, bool pcaRoute,
                       const MaskSettings &settings, cv::Mat mask, const int *cancel);
+
+// 仅屏蔽与画框相连且所有波段均暗的区域。整体欠曝时置 ambiguous 并返回空屏蔽区。
+cv::Mat detectDarkExterior(const std::array<cv::Mat, 8> &aligned, bool &ambiguous,
+                           bool requireDarkCore = false);

@@ -15,6 +15,7 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "docs", "docs", "{CABBB269-8
 		docs\分割故障排查.md = docs\分割故障排查.md
 		docs\样品复核.md = docs\样品复核.md
 		docs\有膜片试验.md = docs\有膜片试验.md
+		docs\跨硬件验证.md = docs\跨硬件验证.md
 	EndProjectSection
 EndProject
 Global

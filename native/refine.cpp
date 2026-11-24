@@ -78,30 +78,6 @@ cv::Mat clothBrightnessGrid(const std::array<cv::Mat, 8> &aligned, const cv::Mat
     return grid;
 }
 
-cv::Mat exterior(const std::array<cv::Mat, 8> &aligned, bool &ambiguous)
-{
-    cv::Mat maximum = aligned[0].clone();
-    for (int b = 1; b < 8; b++)
-        cv::max(maximum, aligned[b], maximum);
-    cv::medianBlur(maximum, maximum, 3);
-    cv::Mat dark = maximum <= darkLimit;
-    // 若大部分像素都欠曝，无法可靠区分布面和台面，留给人工复核。
-    ambiguous = cv::countNonZero(dark) > 0.78 * dark.total();
-    if (ambiguous)
-        return cv::Mat::zeros(dark.size(), CV_8U);
-    cv::Mat padded;
-    cv::copyMakeBorder(dark, padded, 1, 1, 1, 1, cv::BORDER_CONSTANT, cv::Scalar(255));
-    cv::floodFill(padded, cv::Point(0, 0), cv::Scalar(128), nullptr, {}, {}, 4);
-    cv::Mat core = padded(cv::Rect(1, 1, dark.cols, dark.rows)) == 128;
-    // 布边的散焦和配准误差会使紧邻台面的像素混入布面信号。
-    // 只向邻近暗像素扩展，限制台面掩膜侵入深色印花的距离。
-    cv::Mat nearby, transition;
-    cv::dilate(core, nearby, cv::getStructuringElement(cv::MORPH_ELLIPSE, {15, 15}));
-    cv::bitwise_and(nearby, maximum <= 52, transition);
-    cv::bitwise_or(core, transition, core);
-    return core;
-}
-
 // 当布边与画框重合时，外侧深色台面可能位于视野之外。
 // 沿法线向布内采样，用亮度变化判断细长分量是否属于边缘阴影。
 bool isFrameShadow(cv::Rect box, const std::array<cv::Mat, 8> &bands)
@@ -326,6 +302,77 @@ void cleanForeground(cv::Mat mask, const cv::Mat &evidence, const cv::Mat &outsi
     }
 }
 
+// 布面延伸到画框时，各照明通道的边缘衰减不一定同步。只在内侧有明确背景、
+// 近红外和白光连续渐暗而紫外仍有响应的条带内，核对候选像素与当地布面的光谱。
+void suppressEdgeShading(cv::Mat mask, const std::array<cv::Mat, 8> &bands, const cv::Mat &outside)
+{
+    constexpr int cells = 16;
+    const int step = std::clamp(mask.cols / 240, 8, 32);
+    if (mask.cols < cells * step * 4 || mask.rows < 4 * step)
+        return;
+    std::vector<uchar> values;
+    for (int y = 0; y < mask.rows; y += step)
+        for (bool right : {false, true})
+        {
+            auto column = [&](int distance) { return right ? mask.cols - 1 - distance : distance; };
+            int height = std::min(step, mask.rows - y);
+            int anchorX = right ? mask.cols - cells * step : (cells - 2) * step;
+            cv::Rect anchor(anchorX, y, 2 * step, height);
+            if (cv::countNonZero(mask(anchor)) > .1 * anchor.area() || cv::countNonZero(outside(anchor)))
+                continue;
+            cv::Rect strip(right ? mask.cols - cells * step : 0, y, cells * step, height);
+            if (!cv::countNonZero(mask(strip)))
+                continue;
+
+            std::array<std::array<int, 8>, cells> profile{};
+            for (int k = 0; k < cells; ++k)
+                for (int b = 0; b < 8; ++b)
+                {
+                    values.clear();
+                    // 纵向邻近布块共同估计中位值，减少织纹和细小异物对光谱参照的影响。
+                    for (int yy = std::max(0, y - 5 * step); yy < std::min(mask.rows, y + 6 * step); yy += 7)
+                        for (int dx = 2; dx < step; dx += 4)
+                            values.push_back(bands[b].ptr<uchar>(yy)[column(k * step + dx)]);
+                    auto mid = values.begin() + values.size() / 2;
+                    std::nth_element(values.begin(), mid, values.end());
+                    profile[k][b] = *mid;
+                }
+            const auto &edge = profile.front(), &inner = profile.back();
+            if (edge[0] < 18 || edge[0] < inner[0] * .9 || edge[7] > inner[7] * .87)
+                continue;
+            bool gradual = true;
+            for (int b : {5, 6, 7})
+            {
+                int drop = inner[b] - edge[b], increasing = 0;
+                for (int k = 1; k < cells; ++k)
+                {
+                    int change = profile[k][b] - profile[k - 1][b];
+                    gradual &= change >= -5 && change <= std::max(8., drop * .55);
+                    increasing += change > 0;
+                }
+                gradual &= drop >= 10 && increasing >= 4;
+            }
+            if (!gradual)
+                continue;
+            for (int yy = y; yy < y + height; ++yy)
+            {
+                uchar *out = mask.ptr<uchar>(yy);
+                for (int d = 0; d < (cells - 2) * step; ++d)
+                {
+                    int x = column(d);
+                    if (!out[x])
+                        continue;
+                    const auto &cloth = profile[d / step];
+                    bool matches = true;
+                    for (int b = 0; b < 8 && matches; ++b)
+                        matches = std::abs(bands[b].ptr<uchar>(yy)[x] - cloth[b]) <= 8 + .18 * cloth[b];
+                    if (matches)
+                        out[x] = 0;
+                }
+            }
+        }
+}
+
 void fillSmallHoles(cv::Mat mask, const cv::Mat &evidence, const cv::Mat &outside, int threshold,
                     const MaskSettings &settings)
 {
@@ -469,6 +516,44 @@ void fitWhiteBoundary(cv::Mat mask, const cv::Mat &white, const cv::Mat &outside
 }
 } // 匿名命名空间
 
+cv::Mat detectDarkExterior(const std::array<cv::Mat, 8> &aligned, bool &ambiguous, bool requireDarkCore)
+{
+    cv::Mat maximum = aligned[0].clone();
+    for (int b = 1; b < 8; b++)
+        cv::max(maximum, aligned[b], maximum);
+    cv::medianBlur(maximum, maximum, 3);
+    cv::Mat dark = maximum <= darkLimit;
+    // 若大部分像素都欠曝，无法可靠区分布面和台面，留给人工复核。
+    ambiguous = cv::countNonZero(dark) > 0.78 * dark.total();
+    if (ambiguous)
+        return cv::Mat::zeros(dark.size(), CV_8U);
+    cv::Mat padded;
+    cv::copyMakeBorder(dark, padded, 1, 1, 1, 1, cv::BORDER_CONSTANT, cv::Scalar(255));
+    cv::floodFill(padded, cv::Point(0, 0), cv::Scalar(128), nullptr, {}, {}, 4);
+    cv::Mat core = padded(cv::Rect(1, 1, dark.cols, dark.rows)) == 128;
+    if (requireDarkCore)
+    {
+        // 自适应布底的拟合也依赖这个屏蔽区。暗布大面积连到画框时，单靠 30 灰度会误删布面。
+        // 要求候选区至少一半像素仍落在更低的亮度范围，防止较宽阈值吞并只有微弱反射的布料。
+        const int area = cv::countNonZero(core);
+        if (!area)
+            return core;
+        if (2 * cv::countNonZero(core & (maximum <= 20)) < area)
+        {
+            ambiguous = true;
+            core.setTo(0);
+            return core;
+        }
+    }
+    // 布边的散焦和配准误差会使紧邻台面的像素混入布面信号。
+    // 只向邻近暗像素扩展，限制台面掩膜侵入深色印花的距离。
+    cv::Mat nearby, transition;
+    cv::dilate(core, nearby, cv::getStructuringElement(cv::MORPH_ELLIPSE, {15, 15}));
+    cv::bitwise_and(nearby, maximum <= 52, transition);
+    cv::bitwise_or(core, transition, core);
+    return core;
+}
+
 Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv::Point, 8> &offsets,
                       cv::Rect common, const cv::Mat &votes, int threshold, bool pcaRoute,
                       const MaskSettings &settings, cv::Mat mask, const int *cancel)
@@ -477,7 +562,7 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
     for (int b = 0; b < 8; b++)
         aligned[b] = images[b](common + offsets[b]);
     Refinement result;
-    cv::Mat outside = exterior(aligned, result.weakBackground);
+    cv::Mat outside = detectDarkExterior(aligned, result.weakBackground);
     const cv::Mat input = votes(common);
     std::array<float, 256> logLut{};
     for (int i = 0; i < 256; i++)
@@ -640,6 +725,7 @@ Refinement refineMask(const std::array<cv::Mat, 8> &images, const std::array<cv:
     // 调试漏笔可在此比较 input、evidence 与 local，再单步观察连通域清理和补洞。
     cv::compare(evidence, threshold, local, cv::CMP_GE);
     local.setTo(0, outside);
+    suppressEdgeShading(local, aligned, outside);
     cleanForeground(local, evidence, outside, threshold, aligned, settings.noiseArea, !pcaRoute);
     if (cancelled())
         throw std::runtime_error("Cancelled");

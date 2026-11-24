@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw
 
-from run import DATA, GROUPS, MODELS, OUT
+from run import sample_folder, GROUPS, MODELS, OUT
 import json
 
 # 坐标来自 320×268 预览图，布边选区横跨实际边界。
@@ -121,7 +121,7 @@ def compare(previous):
     for row, (g, rect) in enumerate(cases):
         for col, (path, caption) in enumerate(
             [
-                (DATA / str(g) / "W.bmp", "W"),
+                (sample_folder(g) / "W.bmp", "W"),
                 (previous / "rf8" / str(g) / "mask.png", "Previous"),
                 (OUT / "rf8" / str(g) / "mask.png", "Current"),
             ]

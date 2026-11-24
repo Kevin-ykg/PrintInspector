@@ -6,7 +6,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import numpy as np
 from PIL import Image, ImageTk, ImageDraw
-from run import DATA, GROUPS, ROOT, BANDS, labels
+from run import sample_folder, GROUPS, ROOT, BANDS, labels
 
 
 class Editor:
@@ -66,7 +66,7 @@ class Editor:
         self.load()
 
     def load(self):
-        with Image.open(DATA / str(self.g) / (self.band.get() + ".bmp")) as im:
+        with Image.open(sample_folder(self.g) / (self.band.get() + ".bmp")) as im:
             self.img = im.convert("L")
         self.draw()
 

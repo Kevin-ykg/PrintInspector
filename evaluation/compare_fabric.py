@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 
-from run import DATA, OUT
+from run import sample_folder, OUT
 
 
 def pixels(path):
@@ -18,7 +18,7 @@ def pixels(path):
 def stroke_reference(white):
     # 该选区的紫外与白光比值能分开浅色笔画和织纹。
     # 比较两版在同一白光选区内的覆盖和溢出。
-    uv = pixels(DATA / "12" / "UV.bmp")
+    uv = pixels(sample_folder(12) / "UV.bmp")
     roi = np.s_[775:1010, 1060:1330]
     ratio = np.clip(255 * (uv[roi].astype(float) + 8) / (white[roi].astype(float) + 8), 0, 255)
     _, ref = cv2.threshold(
@@ -33,7 +33,7 @@ def compare():
     sheet = Image.new("RGB", (4 * 280, 4 * 215), "#192b34")
     draw = ImageDraw.Draw(sheet)
     for index, group in enumerate((12, 4, 5, 7)):
-        white = pixels(DATA / str(group) / "W.bmp")
+        white = pixels(sample_folder(group) / "W.bmp")
         if white.shape != (2048, 2448):
             raise ValueError(f"Fixed camera windows require 2448 x 2048 images (group {group})")
         for route in (8, 4):
